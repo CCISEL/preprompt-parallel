@@ -1,5 +1,5 @@
-# Programação Paralela e Assíncrona na Plataforma .NET
+# ProgramaÃ§Ã£o Paralela e AssÃ­ncrona na Plataforma .NET
 
-Esta sessão aborda as tecnologias emergentes na área da programação concorrente para a plataforma .NET, focando a sua implementação e os seus padrões de utilização. É dada ênfase ao suporte para programação assíncrona introduzido no C# 5.0, divulgado no PDC 2010.
+Esta sessÃ£o aborda as tecnologias emergentes na Ã¡rea da programaÃ§Ã£o concorrente para a plataforma .NET, focando a sua implementaÃ§Ã£o e os seus padrÃµes de utilizaÃ§Ã£o. Ã‰ dada Ãªnfase ao suporte para programaÃ§Ã£o assÃ­ncrona introduzido no C# 5.0, divulgado no PDC 2010.
 
 ## Programa
