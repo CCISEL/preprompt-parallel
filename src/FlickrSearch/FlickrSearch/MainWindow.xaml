@@ -1,0 +1,23 @@
+﻿<Window x:Class="FlickrSearch.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Movie Finder" Height="537" Width="1000">
+    <DockPanel TextBlock.FontSize="28" TextBlock.Foreground="White">
+        <DockPanel.Background>
+            <LinearGradientBrush EndPoint="0.5,1" StartPoint="0.5,0">
+                <GradientStop Color="#FF6C1919" Offset="0" />
+                <GradientStop Color="#FFE54343" Offset="1" />
+            </LinearGradientBrush>
+        </DockPanel.Background>
+        <DockPanel Height="80" DockPanel.Dock="Top">
+            <TextBlock DockPanel.Dock="Left" Text="Release year" VerticalAlignment="Center" Margin="30,0,0,0" />
+            <TextBox Name="textBox" Width="160" VerticalAlignment="Center" Margin="10,0,0,0" />
+            <Button Name="searchButton" Content="Search" DockPanel.Dock="Left" VerticalAlignment="Center" Width="120" Margin="10,0,0,0" Click="searchButton_Click" IsDefault="True" />
+            <Button Name="cancelButton" Content="Cancel" DockPanel.Dock="Left" VerticalAlignment="Center" Width="120" Margin="10,0,0,0" Click="cancelButton_Click" IsCancel="True" />
+            <TextBlock Name="statusText" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="10,0,30,0" TextAlignment="Right" />
+        </DockPanel>
+        <ScrollViewer VerticalScrollBarVisibility="Auto" DockPanel.Dock="Top">
+            <WrapPanel Name="resultsPanel" HorizontalAlignment="Center" />
+        </ScrollViewer >
+    </DockPanel>
+</Window>
