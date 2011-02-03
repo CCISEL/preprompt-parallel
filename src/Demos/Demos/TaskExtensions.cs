@@ -1,4 +1,5 @@
-﻿using System.Threading.Tasks;
+﻿using System.Threading;
+using System.Threading.Tasks;
 
 namespace Demos
 {
@@ -24,6 +25,48 @@ namespace Demos
                     toComplete.SetCanceled();
                     break;
             }
+        }
+
+        public static Task<T> WithTimeout<T>(this Task<T> task, int timeout)
+        {
+            var tcs = new TaskCompletionSource<T>();
+
+            //
+            // Create a timer that will be a completion source for the 
+            // proxy task associated with the task completion source.
+            //
+
+            var timer = new Timer(_ => tcs.TrySetCanceled());
+            timer.Change(timeout, Timeout.Infinite);
+
+            //
+            // The task argument will also be a completion source, racing with
+            // the timer to set the final state of the proxy task.
+            //
+
+            task.ContinueWith(_ =>
+            {
+                timer.Dispose();
+
+                switch (task.Status)
+                {
+                    case TaskStatus.RanToCompletion:
+                        tcs.TrySetResult(task.Result);
+                        break;
+                    case TaskStatus.Faulted:
+                        tcs.TrySetException(task.Exception);
+                        break;
+                    case TaskStatus.Canceled:
+                        tcs.TrySetCanceled();
+                        break;
+                }
+            });
+
+            //
+            // Return the proxy task.
+            //
+
+            return tcs.Task;
         }
     }
 }
