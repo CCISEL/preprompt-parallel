@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Dataflow;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Imaging;
@@ -83,7 +84,7 @@ namespace FlickrSearch
 
             _lastSearch = new Search();
             _cts = new CancellationTokenSource();
-            load_photos();
+            start_search();
         }
 
         private void scroll_changed(object sender, ScrollChangedEventArgs e)
@@ -92,7 +93,7 @@ namespace FlickrSearch
                 && _lastSearch.HasMore()
                 && _scrollViewer.VerticalOffset == _scrollViewer.ScrollableHeight)
             {
-                load_photos();
+                start_search();
             }
         }
 
@@ -111,7 +112,7 @@ namespace FlickrSearch
             _popup.IsOpen = false;
         }
 
-        private async void load_photos()
+        private async void start_search()
         {
             _searchInProgress = true;
             await load_photos_async();
@@ -174,10 +175,6 @@ namespace FlickrSearch
 
             reserve_ui_space(photos);
             display_photos(photos, token);
-
-            //
-            // The search ends here.
-            //
         }
 
         private void reserve_ui_space(IEnumerable<Photo> photos)
@@ -206,6 +203,7 @@ namespace FlickrSearch
                 var imageTask = await TaskEx.WhenAny(imageTasks);
                 imageTasks.Remove(imageTask);
                 var result = imageTask.Result;
+
                 await result.Item1.Image.Dispatcher.SwitchTo();
                 if (token.IsCancellationRequested == false)
                 {

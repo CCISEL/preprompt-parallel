@@ -35,16 +35,17 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="AsyncCtpLibrary">
-      <HintPath>..\bin\AsyncCtpLibrary.dll</HintPath>
+      <HintPath>..\..\..\bin\AsyncCtpLibrary.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
-    <Reference Include="System.Threading.Tasks.Dataflow">
-      <HintPath>..\bin\System.Threading.Tasks.Dataflow.dll</HintPath>
-    </Reference>
     <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Threading.Tasks.Dataflow">
+      <HintPath>..\..\..\bin\System.Threading.Tasks.Dataflow.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Async.cs" />
     <Compile Include="AsyncEnumerator.cs" />
     <Compile Include="BinaryTree.cs" />
     <Compile Include="Cancellation.cs" />
