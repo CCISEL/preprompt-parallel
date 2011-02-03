@@ -66,9 +66,7 @@ namespace FlickrSearch
 
         private void search_button_click(object sender, RoutedEventArgs e)
         {
-            _resultsPanel.Children.Clear();
-            _scrollViewer.ScrollToTop();
-            _statusText.Text = "";
+            clear_interface();
             _lastSearch = new Search();
             _cts = new CancellationTokenSource();
             load_photos();
@@ -202,6 +200,13 @@ namespace FlickrSearch
                         photo.Attribute("id").Value, photo.Attribute("secret").Value),
                 Title = photo.Attribute("title").Value
             }).ToArray();
+        }
+
+        private void clear_interface()
+        {
+            _resultsPanel.Children.Clear();
+            _scrollViewer.ScrollToTop();
+            _statusText.Text = "";
         }
     }
 }

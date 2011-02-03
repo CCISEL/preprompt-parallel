@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -23,22 +22,26 @@ namespace FlickrSearch
         // Flickr photo search API: http://www.flickr.com/services/api/flickr.photos.search.html
         //
 
-        private const int DEFAULT_PHOTOS_PER_PAGE = 10;
+        private const int DEFAULT_PHOTOS_PER_PAGE = 100;
         private const string ApiKey = "be9746a7685c930eab1f021ce3337572";
         private static readonly string _query = "http://api.flickr.com/services/rest/?method=flickr.photos.search" +
                                                 "&api_key=" + ApiKey + "&per_page=" + DEFAULT_PHOTOS_PER_PAGE +
                                                 "&sort=interestingness-desc&page={0}&text={1}";
 
-        private struct Photo
+        private class Photo
         {
             public string Title { get; set; }
             public string Url { get; set; }
+            public Image Image { get; set; }
         }
 
-        private struct Search
+        private class Search
         {
             private readonly int _currentPage;
             private readonly int _totalPages;
+
+            public Search()
+            { }
 
             public Search(int currentPage, int totalPages)
             {
@@ -55,48 +58,11 @@ namespace FlickrSearch
             {
                 return _currentPage < _totalPages;
             }
-
-            public bool Equals(Search other)
-            {
-                return other._currentPage == _currentPage && other._totalPages == _totalPages;
-            }
-
-            public override bool Equals(object obj)
-            {
-                if (ReferenceEquals(null, obj))
-                {
-                    return false;
-                }
-                if (obj.GetType() != typeof(Search))
-                {
-                    return false;
-                }
-                return Equals((Search)obj);
-            }
-
-            public override int GetHashCode()
-            {
-                unchecked
-                {
-                    return (_currentPage * 397) ^ _totalPages;
-                }
-            }
-
-            public static bool operator ==(Search search1, Search search2)
-            {
-                return search1.Equals(search2);
-            }
-
-            public static bool operator !=(Search search1, Search search2)
-            {
-                return !(search1 == search2);
-            }
         }
 
-        private Search _lastSearch;
-        private bool _scrollPending;
+        private Search _lastSearch = new Search();
+        private bool _searchInProgress;
         private CancellationTokenSource _cts;
-        private Task _currentSearch;
 
         public MainWindow_Async()
         {
@@ -104,31 +70,28 @@ namespace FlickrSearch
             _textBox.Focus();
         }
 
-        private async void search_button_click(object sender, RoutedEventArgs e)
+        private void search_button_click(object sender, RoutedEventArgs e)
         {
-            if (_currentSearch != null && _currentSearch.IsCompleted == false && _cts.IsCancellationRequested == false)
+            if (_searchInProgress)
             {
                 _cts.Cancel();
+                _searchInProgress = false;
             }
 
-            _resultsPanel.Children.Clear();
-            _scrollViewer.ScrollToTop();
-            _statusText.Text = "";
+            clear_interface();
 
             _lastSearch = new Search();
             _cts = new CancellationTokenSource();
-            _currentSearch = load_photos_async();
+            load_photos_async();
         }
 
         private async void scroll_changed(object sender, ScrollChangedEventArgs e)
         {
-            if (_scrollPending == false
+            if (_searchInProgress == false
                 && _lastSearch.HasMore()
                 && _scrollViewer.VerticalOffset == _scrollViewer.ScrollableHeight)
             {
-                _scrollPending = true;
-                await load_photos_async();
-                _scrollPending = false;
+                load_photos_async();
             }
         }
 
@@ -136,9 +99,8 @@ namespace FlickrSearch
         {
             if (_cts != null)
             {
-                await TaskScheduler.Default.SwitchTo();
                 _cts.Cancel();
-                await _statusText.Dispatcher.SwitchTo();
+                _searchInProgress = false;
                 _statusText.Text = "Cancelled";
             }
         }
@@ -151,21 +113,34 @@ namespace FlickrSearch
         private async Task load_photos_async()
         {
             string text = _textBox.Text;
-            if (string.IsNullOrEmpty(text))
+            if (string.IsNullOrEmpty(text) || _cts != null && _cts.IsCancellationRequested)
             {
                 return;
             }
 
-            await TaskEx.Delay(20000);
-            if (_cts != null)
+            _searchInProgress = true;
+            var token = _cts.Token;
+
+            var uri = new Uri(_query.FormatWith(_lastSearch.GetNextPage(), text));
+            var client = new WebClient();
+
+            var contentTask = client.DownloadStringTaskAsync(uri, token);
+            if (contentTask == await TaskEx.ConfigureAwait(TaskEx.WhenAny(contentTask, TaskEx.Delay(20000)),
+                                                           false))
             {
+                process_photo_urls(contentTask.Result, token);
+            }
+            else
+            {
+                await _statusText.Dispatcher.SwitchTo();
                 _cts.Cancel();
+                _searchInProgress = false;
                 _statusText.Text = "Timeout";
             }
+        }
 
-            var client = new WebClient();
-            string content = await client.DownloadStringTaskAsync(new Uri(_query.FormatWith(_lastSearch.GetNextPage(), text)),
-                                                                  _cts.Token);
+        private async void process_photo_urls(string content, CancellationToken token)
+        {
             var document = XDocument.Parse(content);
             var photosElement = document.Descendants("photos").FirstOrDefault();
 
@@ -180,13 +155,41 @@ namespace FlickrSearch
             int totalPages = int.Parse(photosElement.Attribute("total").Value);
             int photosUntilNow = photos.Length + ((currentPage - 1) * DEFAULT_PHOTOS_PER_PAGE);
 
-            _lastSearch = new Search(currentPage, totalPages);
+            await _statusText.Dispatcher.SwitchTo();
 
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _lastSearch = new Search(currentPage, totalPages);
             _statusText.Text = "{0} photos of a total {1}".FormatWith(photosUntilNow, totalPages);
-            display_photos(photos);
+
+            display_photos(photos, token);
         }
 
-        void display_photos(IEnumerable<Photo> photos)
+        void display_photos(Photo[] photos, CancellationToken token)
+        {
+            reserve_ui_space(photos);
+            _searchInProgress = false;
+            TaskEx.Run(() =>
+            {
+                foreach (var photo in photos)
+                {
+                    var currentPhoto = photo;
+                    var stream = download_photo(photo.Url);
+                    photo.Image.Dispatcher.BeginInvoke(new Action(() => 
+                    {
+                        if (token.IsCancellationRequested == false)
+                        {
+                            attach_bitmap(stream, currentPhoto);
+                        }
+                    }), null);
+                }
+            });
+        }
+
+        private void reserve_ui_space(Photo[] photos)
         {
             foreach (var photo in photos)
             {
@@ -195,42 +198,44 @@ namespace FlickrSearch
                     return;
                 }
 
-                var bitmapImage = download_photo(photo.Url);
-                var image = new Image { Source = bitmapImage, Width = 110, Height = 150, Margin = new Thickness(5) };
-
-                string title = photo.Title;
+                photo.Image = new Image { Width = 110, Height = 150, Margin = new Thickness(5) };
                 var tt = new ToolTip { Content = photo.Title };
-                image.ToolTip = tt;
-
-                var url = photo.Url;
-
-                image.MouseDown += (sender1, e1) =>
-                {
-                    var fullImage = new Image
-                    {
-                        Source = bitmapImage,
-                        Width = bitmapImage.Width,
-                        Height = bitmapImage.Height,
-                        Margin = new Thickness(20)
-                    };
-                    fullImage.MouseDown += (sender2, e2) =>
-                    {
-                        _popup.IsOpen = false;
-                        System.Diagnostics.Process.Start(url);
-                    };
-
-                    _frontImage.Children.Clear();
-                    _frontImage.Children.Add(fullImage);
-                    _frontImageTitle.Text = title;
-
-                    _popup.IsOpen = true;
-                };
-
-                _resultsPanel.Children.Add(image);
+                photo.Image.ToolTip = tt;
+                _resultsPanel.Children.Add(photo.Image);
             }
         }
 
-        private static BitmapImage download_photo(string url)
+        private void attach_bitmap(MemoryStream stream, Photo photo)
+        {
+            var bitmapImage = new BitmapImage();
+            bitmapImage.BeginInit();
+            bitmapImage.StreamSource = stream;
+            bitmapImage.EndInit();
+            photo.Image.Source = bitmapImage;
+            photo.Image.MouseDown += (sender1, e1) =>
+            {
+                var fullImage = new Image
+                {
+                    Source = bitmapImage,
+                    Width = bitmapImage.Width,
+                    Height = bitmapImage.Height,
+                    Margin = new Thickness(20)
+                };
+                fullImage.MouseDown += (sender2, e2) =>
+                {
+                    _popup.IsOpen = false;
+                    System.Diagnostics.Process.Start(photo.Url);
+                };
+
+                _frontImage.Children.Clear();
+                _frontImage.Children.Add(fullImage);
+                _frontImageTitle.Text = photo.Title;
+
+                _popup.IsOpen = true;
+            };
+        }
+
+        private static MemoryStream download_photo(string url)
         {
             var request = WebRequest.Create(url);
             using (var response = request.GetResponse())
@@ -240,11 +245,7 @@ namespace FlickrSearch
                 responseStream.CopyTo(result);
 
                 result.Seek(0, SeekOrigin.Begin);
-                var bitmapImage = new BitmapImage();
-                bitmapImage.BeginInit();
-                bitmapImage.StreamSource = result;
-                bitmapImage.EndInit();
-                return bitmapImage;
+                return result;
             }
         }
 
@@ -262,6 +263,13 @@ namespace FlickrSearch
                         photo.Attribute("id").Value, photo.Attribute("secret").Value),
                 Title = photo.Attribute("title").Value
             }).ToArray();
+        }
+
+        private void clear_interface()
+        {
+            _resultsPanel.Children.Clear();
+            _scrollViewer.ScrollToTop();
+            _statusText.Text = "";
         }
     }
 }
