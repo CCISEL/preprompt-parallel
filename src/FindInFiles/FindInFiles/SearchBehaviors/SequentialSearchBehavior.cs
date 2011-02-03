@@ -10,8 +10,8 @@ namespace FindInFiles.SearchBehaviors
 {
     internal sealed class SequentialSearchBehavior : ISearchBehavior
     {
-        public void Start(string directory, IEnumerable<string> wildcards, Regex regex, CancellationToken token,
-                          Action<Match[]> onMatched, Action<long> onComplete)
+        public void Start(string directory, IEnumerable<string> wildcards, Regex regex,
+                         CancellationToken token, Action<Match[]> onMatched, Action<long> onComplete)
         {
             //
             // Capture the GUI (the caller) thread's synchronization context.
@@ -34,18 +34,20 @@ namespace FindInFiles.SearchBehaviors
                 // a time to minimize SynchronizationContext calls.
                 //
 
-                wildcards
-                .SelectMany(wildcard => Directory.EnumerateFiles(directory, wildcard, SearchOption.AllDirectories))
-                .Select(file => file.FindMatches(regex, token))
-                .ForEach(matches =>
+                var allMatches = wildcards
+                    .SelectMany(wildcard => Directory.EnumerateFiles(directory, wildcard, SearchOption.AllDirectories))
+                    .Select(file => file.FindMatches(regex, token));
+
+                foreach (var matches in allMatches)
                 {
-                    context.Post(x => onMatched(matches), null);
+                    var m = matches;
+                    context.Post(x => onMatched(m), null);
 
                     if (token.IsCancellationRequested)
                     {
                         return;
                     }
-                });
+                }
 
                 stopwatch.Stop();
                 context.Post(x => onComplete(stopwatch.ElapsedMilliseconds), null);
