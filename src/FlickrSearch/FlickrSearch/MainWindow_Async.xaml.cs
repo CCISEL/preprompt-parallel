@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -24,9 +25,9 @@ namespace FlickrSearch
 
         private const int DEFAULT_PHOTOS_PER_PAGE = 100;
         private const string ApiKey = "be9746a7685c930eab1f021ce3337572";
-        private static readonly string _query = "http://api.flickr.com/services/rest/?method=flickr.photos.search" +
-                                                "&api_key=" + ApiKey + "&per_page=" + DEFAULT_PHOTOS_PER_PAGE +
-                                                "&sort=interestingness-desc&page={0}&text={1}";
+        private static readonly string _query = @"http://api.flickr.com/services/rest/?method=flickr.photos.search" +
+                                                @"&api_key=" + ApiKey + "&per_page=" + DEFAULT_PHOTOS_PER_PAGE +
+                                                @"&page={0}&text={1}&sort=interestingness-desc";
 
         private class Photo
         {
@@ -82,16 +83,16 @@ namespace FlickrSearch
 
             _lastSearch = new Search();
             _cts = new CancellationTokenSource();
-            load_photos_async();
+            load_photos();
         }
 
-        private async void scroll_changed(object sender, ScrollChangedEventArgs e)
+        private void scroll_changed(object sender, ScrollChangedEventArgs e)
         {
             if (_searchInProgress == false
                 && _lastSearch.HasMore()
                 && _scrollViewer.VerticalOffset == _scrollViewer.ScrollableHeight)
             {
-                load_photos_async();
+                load_photos();
             }
         }
 
@@ -110,6 +111,13 @@ namespace FlickrSearch
             _popup.IsOpen = false;
         }
 
+        private async void load_photos()
+        {
+            _searchInProgress = true;
+            await load_photos_async();
+            _searchInProgress = false;
+        }
+
         private async Task load_photos_async()
         {
             string text = _textBox.Text;
@@ -117,8 +125,7 @@ namespace FlickrSearch
             {
                 return;
             }
-
-            _searchInProgress = true;
+            
             var token = _cts.Token;
 
             var uri = new Uri(_query.FormatWith(_lastSearch.GetNextPage(), text));
@@ -128,18 +135,17 @@ namespace FlickrSearch
             if (contentTask == await TaskEx.ConfigureAwait(TaskEx.WhenAny(contentTask, TaskEx.Delay(20000)),
                                                            false))
             {
-                process_photo_urls(contentTask.Result, token);
+                await process_photo_urls(contentTask.Result, token);
             }
             else
             {
                 await _statusText.Dispatcher.SwitchTo();
                 _cts.Cancel();
-                _searchInProgress = false;
                 _statusText.Text = "Timeout";
             }
         }
 
-        private async void process_photo_urls(string content, CancellationToken token)
+        private async Task process_photo_urls(string content, CancellationToken token)
         {
             var document = XDocument.Parse(content);
             var photosElement = document.Descendants("photos").FirstOrDefault();
@@ -147,6 +153,7 @@ namespace FlickrSearch
             Photo[] photos;
             if (photosElement == null || (photos = get_photos(photosElement)).Length == 0)
             {
+                await _statusText.Dispatcher.SwitchTo();
                 _resultsPanel.Children.Add(new TextBox { Text = document.ToString() });
                 return;
             }
@@ -165,31 +172,15 @@ namespace FlickrSearch
             _lastSearch = new Search(currentPage, totalPages);
             _statusText.Text = "{0} photos of a total {1}".FormatWith(photosUntilNow, totalPages);
 
-            display_photos(photos, token);
-        }
-
-        void display_photos(Photo[] photos, CancellationToken token)
-        {
             reserve_ui_space(photos);
-            _searchInProgress = false;
-            TaskEx.Run(() =>
-            {
-                foreach (var photo in photos)
-                {
-                    var currentPhoto = photo;
-                    var stream = download_photo(photo.Url);
-                    photo.Image.Dispatcher.BeginInvoke(new Action(() => 
-                    {
-                        if (token.IsCancellationRequested == false)
-                        {
-                            attach_bitmap(stream, currentPhoto);
-                        }
-                    }), null);
-                }
-            });
+            display_photos(photos, token);
+
+            //
+            // The search ends here.
+            //
         }
 
-        private void reserve_ui_space(Photo[] photos)
+        private void reserve_ui_space(IEnumerable<Photo> photos)
         {
             foreach (var photo in photos)
             {
@@ -205,7 +196,42 @@ namespace FlickrSearch
             }
         }
 
-        private void attach_bitmap(MemoryStream stream, Photo photo)
+        private async void display_photos(IEnumerable<Photo> photos, CancellationToken token)
+        {
+            await TaskScheduler.Default.SwitchTo();
+
+            var imageTasks = photos.Select(download_photo_async).ToList();
+            while (imageTasks.Count() > 0)
+            {
+                var imageTask = await TaskEx.WhenAny(imageTasks);
+                imageTasks.Remove(imageTask);
+                var result = imageTask.Result;
+                await result.Item1.Image.Dispatcher.SwitchTo();
+                if (token.IsCancellationRequested == false)
+                {
+                    attach_bitmap(result.Item1, result.Item2);
+                }
+            }
+        }
+
+        private static Task<Tuple<Photo, MemoryStream>> download_photo_async(Photo photo)
+        {
+            return TaskEx.Run(() =>
+            {
+                var request = WebRequest.Create(photo.Url);
+                using (var response = request.GetResponse())
+                using (var responseStream = response.GetResponseStream())
+                {
+                    var result = new MemoryStream();
+                    responseStream.CopyTo(result);
+
+                    result.Seek(0, SeekOrigin.Begin);
+                    return Tuple.Create(photo, result);
+                }
+            });
+        }
+
+        private void attach_bitmap(Photo photo, MemoryStream stream)
         {
             var bitmapImage = new BitmapImage();
             bitmapImage.BeginInit();
@@ -233,20 +259,6 @@ namespace FlickrSearch
 
                 _popup.IsOpen = true;
             };
-        }
-
-        private static MemoryStream download_photo(string url)
-        {
-            var request = WebRequest.Create(url);
-            using (var response = request.GetResponse())
-            using (var responseStream = response.GetResponseStream())
-            {
-                var result = new MemoryStream();
-                responseStream.CopyTo(result);
-
-                result.Seek(0, SeekOrigin.Begin);
-                return result;
-            }
         }
 
         private static Photo[] get_photos(XContainer document)

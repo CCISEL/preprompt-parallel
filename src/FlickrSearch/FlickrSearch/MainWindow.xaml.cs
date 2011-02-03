@@ -27,16 +27,19 @@ namespace FlickrSearch
                                                 "&api_key=" + ApiKey + "&per_page=" + DEFAULT_PHOTOS_PER_PAGE +
                                                 "&sort=interestingness-desc&page={0}&text={1}";
 
-        private struct Photo
+        private class Photo
         {
             public string Title { get; set; }
             public string Url { get; set; }
         }
 
-        private struct Search
+        private class Search
         {
             private readonly int _currentPage;
             private readonly int _totalPages;
+            
+            public Search() 
+            { }
 
             public Search(int currentPage, int totalPages)
             {
@@ -55,7 +58,7 @@ namespace FlickrSearch
             }
         }
 
-        private Search _lastSearch;
+        private Search _lastSearch = new Search();
         private CancellationTokenSource _cts;
 
         public MainWindow()
