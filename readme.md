@@ -31,3 +31,7 @@ Duarte Nunes e Carlos Martins
 ## Data
 
 03 de Fevereiro de 2011, das 17:00 às 22:30
+
+## How to get this code from github
+
+git clone https://github.com/prompt/preprompt-parallel.git
