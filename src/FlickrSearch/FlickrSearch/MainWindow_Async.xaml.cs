@@ -1,8 +1,10 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Imaging;
@@ -13,9 +15,9 @@ using System.Xml.Linq;
 namespace FlickrSearch
 {
     /// <summary>
-    /// Interaction logic for MainWindow.xaml
+    /// Interaction logic for MainWindow_Async.xaml
     /// </summary>
-    public partial class MainWindow
+    public partial class MainWindow_Async
     {
         //
         // Flickr photo search API: http://www.flickr.com/services/api/flickr.photos.search.html
@@ -53,41 +55,90 @@ namespace FlickrSearch
             {
                 return _currentPage < _totalPages;
             }
+
+            public bool Equals(Search other)
+            {
+                return other._currentPage == _currentPage && other._totalPages == _totalPages;
+            }
+
+            public override bool Equals(object obj)
+            {
+                if (ReferenceEquals(null, obj))
+                {
+                    return false;
+                }
+                if (obj.GetType() != typeof(Search))
+                {
+                    return false;
+                }
+                return Equals((Search)obj);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    return (_currentPage * 397) ^ _totalPages;
+                }
+            }
+
+            public static bool operator ==(Search search1, Search search2)
+            {
+                return search1.Equals(search2);
+            }
+
+            public static bool operator !=(Search search1, Search search2)
+            {
+                return !(search1 == search2);
+            }
         }
 
         private Search _lastSearch;
+        private bool _scrollPending;
         private CancellationTokenSource _cts;
+        private Task _currentSearch;
 
-        public MainWindow()
+        public MainWindow_Async()
         {
             InitializeComponent();
             _textBox.Focus();
         }
 
-        private void search_button_click(object sender, RoutedEventArgs e)
+        private async void search_button_click(object sender, RoutedEventArgs e)
         {
+            if (_currentSearch != null && _currentSearch.IsCompleted == false && _cts.IsCancellationRequested == false)
+            {
+                _cts.Cancel();
+            }
+
             _resultsPanel.Children.Clear();
             _scrollViewer.ScrollToTop();
             _statusText.Text = "";
+
             _lastSearch = new Search();
             _cts = new CancellationTokenSource();
-            load_photos();
+            _currentSearch = load_photos_async();
         }
 
-        private void scroll_changed(object sender, ScrollChangedEventArgs e)
+        private async void scroll_changed(object sender, ScrollChangedEventArgs e)
         {
-            if (_lastSearch.HasMore() &&
-                _scrollViewer.VerticalOffset == _scrollViewer.ScrollableHeight)
+            if (_scrollPending == false
+                && _lastSearch.HasMore()
+                && _scrollViewer.VerticalOffset == _scrollViewer.ScrollableHeight)
             {
-                load_photos();
+                _scrollPending = true;
+                await load_photos_async();
+                _scrollPending = false;
             }
         }
 
-        private void cancel_button_click(object sender, RoutedEventArgs e)
+        private async void cancel_button_click(object sender, RoutedEventArgs e)
         {
             if (_cts != null)
             {
+                await TaskScheduler.Default.SwitchTo();
                 _cts.Cancel();
+                await _statusText.Dispatcher.SwitchTo();
                 _statusText.Text = "Cancelled";
             }
         }
@@ -97,7 +148,7 @@ namespace FlickrSearch
             _popup.IsOpen = false;
         }
 
-        private void load_photos()
+        private async Task load_photos_async()
         {
             string text = _textBox.Text;
             if (string.IsNullOrEmpty(text))
@@ -105,7 +156,16 @@ namespace FlickrSearch
                 return;
             }
 
-            string content = new WebClient().DownloadString(_query.FormatWith(_lastSearch.GetNextPage(), text));
+            await TaskEx.Delay(20000);
+            if (_cts != null)
+            {
+                _cts.Cancel();
+                _statusText.Text = "Timeout";
+            }
+
+            var client = new WebClient();
+            string content = await client.DownloadStringTaskAsync(new Uri(_query.FormatWith(_lastSearch.GetNextPage(), text)),
+                                                                  _cts.Token);
             var document = XDocument.Parse(content);
             var photosElement = document.Descendants("photos").FirstOrDefault();
 
