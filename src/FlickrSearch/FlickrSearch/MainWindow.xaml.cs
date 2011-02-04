@@ -1,12 +1,14 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
+using System.Threading.Tasks.Dataflow;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Imaging;
-using System.Xml.Linq;
 
 // ReSharper disable PossibleNullReferenceException
 
@@ -21,45 +23,36 @@ namespace FlickrSearch
         // Flickr photo search API: http://www.flickr.com/services/api/flickr.photos.search.html
         //
 
-        private const int DEFAULT_PHOTOS_PER_PAGE = 10;
+        private const int DEFAULT_PHOTOS_PER_PAGE = 100;
         private const string ApiKey = "be9746a7685c930eab1f021ce3337572";
-        private static readonly string _query = "http://api.flickr.com/services/rest/?method=flickr.photos.search" +
-                                                "&api_key=" + ApiKey + "&per_page=" + DEFAULT_PHOTOS_PER_PAGE +
-                                                "&sort=interestingness-desc&page={0}&text={1}";
+        private static readonly string _query = @"http://api.flickr.com/services/rest/?method=flickr.photos.search" +
+                                                @"&api_key=" + ApiKey + "&per_page=" + DEFAULT_PHOTOS_PER_PAGE +
+                                                @"&page={0}&text={1}&sort=interestingness-desc";
 
-        private class Photo
-        {
-            public string Title { get; set; }
-            public string Url { get; set; }
-        }
+        //
+        // All fields are confined to the UI thread. 
+        //
 
-        private class Search
-        {
-            private readonly int _currentPage;
-            private readonly int _totalPages;
-            
-            public Search() 
-            { }
+        private int _lastRequestedPage;
+        private int _totalPages;
+        private string _currentSearchTerm;
 
-            public Search(int currentPage, int totalPages)
-            {
-                _currentPage = currentPage;
-                _totalPages = totalPages;
-            }
+        //
+        // This object is used to ensure that when a request for a photo page is triggered,  
+        // no superfluous requests for the same page will be issued. The object is set to 
+        // null when the photo URLs have been retrieved and the photo area expanded. The  
+        // user can then scroll to the new bottom in order to request more photos, although  
+        // the previously requested photos may still be downloading.
+        //
 
-            public int GetNextPage()
-            {
-                return _currentPage + 1;
-            }
+        private object _loadingPhotoUrls;
 
-            public bool HasMore()
-            {
-                return _currentPage < _totalPages;
-            }
-        }
+        //
+        // All cancellation related operations are performed on the UI thread. A cancelation 
+        // request stops the global search so that no more photo pages can be requested. 
+        //
 
-        private Search _lastSearch = new Search();
-        private CancellationTokenSource _cts;
+        private CancellationTokenSource _searchCts;
 
         public MainWindow()
         {
@@ -70,26 +63,54 @@ namespace FlickrSearch
         private void search_button_click(object sender, RoutedEventArgs e)
         {
             clear_interface();
-            _lastSearch = new Search();
-            _cts = new CancellationTokenSource();
-            load_photos();
+
+            //
+            // Stop the previous search.
+            //
+
+            if (_searchCts != null && _searchCts.IsCancellationRequested == false)  
+            {
+                _searchCts.Cancel();
+                _searchCts.Dispose();
+            }
+
+            //
+            // Start a new search.
+            //
+
+            if ((_currentSearchTerm = _textBox.Text).IsNullOrEmpty())
+            {
+                return;
+            }
+
+            _searchCts = new CancellationTokenSource();
+            start_search();
         }
 
         private void scroll_changed(object sender, ScrollChangedEventArgs e)
         {
-            if (_lastSearch.HasMore() &&
-                _scrollViewer.VerticalOffset == _scrollViewer.ScrollableHeight)
+            //
+            // We request another page of photos from Flickr if:
+            //  1) there are more pages to be requested;
+            //  2) the user scrolled to the bottom of the scrollable area;
+            //  3) the search has not been cancelled; and
+            //  4) there is no ongoing web request for photo urls.
+            //
+
+            if (_totalPages > _lastRequestedPage
+                && _scrollViewer.VerticalOffset == _scrollViewer.ScrollableHeight
+                && _searchCts != null && _searchCts.IsCancellationRequested == false
+                && _loadingPhotoUrls == null)
             {
-                load_photos();
+                start_search();
             }
         }
 
         private void cancel_button_click(object sender, RoutedEventArgs e)
         {
-            if (_cts != null)
+            if (_searchCts != null)
             {
-                _cts.Cancel();
-                _statusText.Text = "Cancelled";
+                cancel();
             }
         }
 
@@ -98,113 +119,155 @@ namespace FlickrSearch
             _popup.IsOpen = false;
         }
 
-        private void load_photos()
+        private void cancel()
         {
-            string text = _textBox.Text;
-            if (string.IsNullOrEmpty(text))
-            {
-                return;
-            }
-
-            string content = new WebClient().DownloadString(_query.FormatWith(_lastSearch.GetNextPage(), text));
-            var document = XDocument.Parse(content);
-            var photosElement = document.Descendants("photos").FirstOrDefault();
-
-            Photo[] photos;
-            if (photosElement == null || (photos = get_photos(photosElement)).Length == 0)
-            {
-                _resultsPanel.Children.Add(new TextBox { Text = document.ToString() });
-                return;
-            }
-
-            int currentPage = int.Parse(photosElement.Attribute("page").Value);
-            int totalPages = int.Parse(photosElement.Attribute("total").Value);
-            int photosUntilNow = photos.Length + ((currentPage - 1) * DEFAULT_PHOTOS_PER_PAGE);
-
-            _lastSearch = new Search(currentPage, totalPages);
-
-            _statusText.Text = "{0} photos of a total {1}".FormatWith(photosUntilNow, totalPages);
-            display_photos(photos);
+            _searchCts.Cancel();
+            _statusText.Text = "Cancelled";
         }
 
-        void display_photos(IEnumerable<Photo> photos)
+        private async void start_search()
         {
-            foreach (var photo in photos)
+            //
+            // The search can be cancelled because:
+            //  1) the user explicitly issued a cancellation request;
+            //  2) the user entered another search term; or
+            //  3) the web request timed out.
+            //
+            // When the search is cancelled, we have to be careful not to interfere with 
+            // a new search that may have started in the meanwhile. This means we cannot 
+            // update any fields without making sure no new search has started. For that
+            // purpose we keep a generation object to detect when a new search is started.
+            //
+
+            var currentSearch = _loadingPhotoUrls = new object();
+
+            //
+            // Load the photo URLs.
+            //
+
+            await load_photo_urls_async(_searchCts.Token);
+            
+            //
+            // If no new search has started, enable requests for more photos.
+            //
+
+            if (currentSearch == _loadingPhotoUrls)
             {
-                if (_cts.IsCancellationRequested)
+                _loadingPhotoUrls = null;
+            }
+        }
+        
+        private async Task load_photo_urls_async(CancellationToken token)
+        {
+            var client = new WebClient();
+            var uri = new Uri(_query.FormatWith(_lastRequestedPage + 1, _currentSearchTerm));
+
+            var photoUrlsTask = client.DownloadStringTaskAsync(uri, token);
+            if (photoUrlsTask != await TaskEx.WhenAny(photoUrlsTask, TaskEx.Delay(20000)))
+            {
+                cancel();
+            }
+
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            var searchResult = await TaskEx.Run(() => PhotoSearchResult.TryParse(photoUrlsTask.Result));
+            if (searchResult.Photos.Length == 0)
+            {
+                _statusText.Text = "No results found";
+                return;
+            }
+
+            display_photos(update_ui(searchResult).ToList(), token);
+        }
+
+        private IEnumerable<Tuple<Photo, Image>> update_ui(PhotoSearchResult searchResult)
+        {
+            int photosUntilNow = searchResult.Photos.Length + _lastRequestedPage * DEFAULT_PHOTOS_PER_PAGE;
+            _lastRequestedPage = searchResult.Page;
+            _totalPages = searchResult.TotalPages;
+            _statusText.Text = "{0} photos of a total {1}".FormatWith(photosUntilNow, _totalPages);
+
+            foreach (var photo in searchResult.Photos)
+            {
+                var image = new Image
                 {
-                    return;
-                }
-
-                var bitmapImage = download_photo(photo.Url);
-                var image = new Image { Source = bitmapImage, Width = 110, Height = 150, Margin = new Thickness(5) };
-
-                string title = photo.Title;
-                var tt = new ToolTip { Content = photo.Title };
-                image.ToolTip = tt;
-
-                var url = photo.Url;
-
-                image.MouseDown += (sender1, e1) =>
-                {
-                    var fullImage = new Image
-                    {
-                        Source = bitmapImage,
-                        Width = bitmapImage.Width,
-                        Height = bitmapImage.Height,
-                        Margin = new Thickness(20)
-                    };
-                    fullImage.MouseDown += (sender2, e2) =>
-                    {
-                        _popup.IsOpen = false;
-                        System.Diagnostics.Process.Start(url);
-                    };
-
-                    _frontImage.Children.Clear();
-                    _frontImage.Children.Add(fullImage);
-                    _frontImageTitle.Text = title;
-
-                    _popup.IsOpen = true;
+                    Width = 110,
+                    Height = 150,
+                    Margin = new Thickness(5),
+                    ToolTip = new ToolTip {Content = photo.Title}
                 };
-
                 _resultsPanel.Children.Add(image);
+                yield return Tuple.Create(photo, image);
             }
         }
 
-        private static BitmapImage download_photo(string url)
+        private async void display_photos(IEnumerable<Tuple<Photo, Image>> photos, CancellationToken token)
         {
-            var request = WebRequest.Create(url);
-            using (var response = request.GetResponse())
+            await TaskScheduler.Default.SwitchTo();
+
+            var imageTasks = photos.Select(download_photo_async).ToList();
+            while (imageTasks.Count() > 0)
+            {
+                var imageTask = await TaskEx.WhenAny(imageTasks);
+                imageTasks.Remove(imageTask);
+                var result = imageTask.Result;
+
+                await result.Item2.Dispatcher.SwitchTo();
+                if (token.IsCancellationRequested == false)
+                {
+                    attach_bitmap(result);
+                }
+            }
+        }
+
+        private static async Task<Tuple<Photo, Image, MemoryStream>> download_photo_async(Tuple<Photo, Image> photoUi)
+        {
+            var photo = photoUi.Item1;
+            var request = WebRequest.Create(photo.Url);
+            using (var response = await request.GetResponseAsync())
             using (var responseStream = response.GetResponseStream())
             {
                 var result = new MemoryStream();
-                responseStream.CopyTo(result);
+                await responseStream.CopyToAsync(result);
 
                 result.Seek(0, SeekOrigin.Begin);
-                var bitmapImage = new BitmapImage();
-                bitmapImage.BeginInit();
-                bitmapImage.StreamSource = result;
-                bitmapImage.EndInit();
-                return bitmapImage;
+                return Tuple.Create(photo, photoUi.Item2, result);
             }
         }
 
-        private static Photo[] get_photos(XContainer document)
+        private void attach_bitmap(Tuple<Photo, Image, MemoryStream> photoUi)
         {
-            //
-            // Flickr uses the following URL format: 
-            //   http://farm{farm-id}.static.flickr.com/{server-id}/{id}_{secret}.jpg
-            //
-
-            return document.Descendants("photo").Select(photo => new Photo
+            var bitmapImage = new BitmapImage();
+            bitmapImage.BeginInit();
+            bitmapImage.StreamSource = photoUi.Item3;
+            bitmapImage.EndInit();
+            photoUi.Item2.Source = bitmapImage;
+            photoUi.Item2.MouseDown += (sender1, e1) =>
             {
-                Url = "http://farm{0}.static.flickr.com/{1}/{2}_{3}.jpg".FormatWith(
-                        photo.Attribute("farm").Value, photo.Attribute("server").Value,
-                        photo.Attribute("id").Value, photo.Attribute("secret").Value),
-                Title = photo.Attribute("title").Value
-            }).ToArray();
-        }
+                var fullImage = new Image
+                {
+                    Source = bitmapImage,
+                    Width = bitmapImage.Width,
+                    Height = bitmapImage.Height,
+                    Margin = new Thickness(20)
+                };
+                fullImage.MouseDown += (sender2, e2) =>
+                {
+                    _popup.IsOpen = false;
+                    System.Diagnostics.Process.Start(photoUi.Item1.Url);
+                };
 
+                _frontImage.Children.Clear();
+                _frontImage.Children.Add(fullImage);
+                _frontImageTitle.Text = photoUi.Item1.Title;
+
+                _popup.IsOpen = true;
+            };
+        }
+        
         private void clear_interface()
         {
             _resultsPanel.Children.Clear();
