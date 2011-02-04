@@ -44,22 +44,10 @@ namespace Demos
             // the timer to set the final state of the proxy task.
             //
 
-            task.ContinueWith(_ =>
+            task.ContinueWith(t =>
             {
                 timer.Dispose();
-
-                switch (task.Status)
-                {
-                    case TaskStatus.RanToCompletion:
-                        tcs.TrySetResult(task.Result);
-                        break;
-                    case TaskStatus.Faulted:
-                        tcs.TrySetException(task.Exception);
-                        break;
-                    case TaskStatus.Canceled:
-                        tcs.TrySetCanceled();
-                        break;
-                }
+                tcs.SetFromTask(t);
             });
 
             //
