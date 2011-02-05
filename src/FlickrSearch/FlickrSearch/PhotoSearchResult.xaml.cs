@@ -29,7 +29,7 @@ namespace FlickrSearch
             //   http://farm{farm-id}.static.flickr.com/{server-id}/{id}_{secret}.jpg
             //
 
-            return document.Descendants("photo").Select(photo => new Photo
+            return document.Descendants("photo").AsParallel().Select(photo => new Photo
             {
                 Url = "http://farm{0}.static.flickr.com/{1}/{2}_{3}.jpg".FormatWith(
                     photo.Attribute("farm").Value, photo.Attribute("server").Value,
